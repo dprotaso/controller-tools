@@ -22,10 +22,14 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"log"
+	"os"
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
 	apiext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	crdmarkers "sigs.k8s.io/controller-tools/pkg/crd/markers"
 
 	"sigs.k8s.io/controller-tools/pkg/loader"
@@ -72,6 +76,34 @@ type schemaContext struct {
 
 	allowDangerousTypes    bool
 	ignoreUnexportedFields bool
+}
+
+type overrides struct {
+	PreserveUnknownFields *bool  `yaml:"preserveUnknownFields"`
+	Optional              bool   `yaml:"optional"`
+	Description           string `yaml:"description"`
+}
+
+type typeOverrides struct {
+	overrides      `yaml:",inline"`
+	AllowedFields  []string             `yaml:"allowedFields"`
+	FieldOverrides map[string]overrides `yaml:"fieldOverrides"`
+}
+
+type config map[string]typeOverrides
+
+var c config = map[string]typeOverrides{}
+
+func init() {
+	yamlFile, err := os.ReadFile(os.Getenv("SCHEMAPATCH_CONFIG_FILE"))
+	if err != nil {
+		log.Fatalf("Failed to open config file: %v", err)
+	}
+	err = yaml.Unmarshal(yamlFile, c)
+	if err != nil {
+		log.Fatalf("Failed to parse config file: %v", err)
+	}
+
 }
 
 // newSchemaContext constructs a new schemaContext for the given package and schema requester.
@@ -346,10 +378,37 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 		return props
 	}
 
+	typN := ctx.pkg.ID + "." + ctx.info.RawSpec.Name.String()
+	allowedFields := sets.NewString(c[typN].AllowedFields...)
+
 	for _, field := range ctx.info.Fields {
 		// Skip if the field is not an inline field, ignoreUnexportedFields is true, and the field is not exported
 		if field.Name != "" && ctx.ignoreUnexportedFields && !ast.IsExported(field.Name) {
 			continue
+		}
+
+		fieldN := field.Name
+		if fieldN == "" {
+			// This is an embedded type. It may either be a pointer type or a direct
+			// identifier. We take it's type name as field name since that's what Golang
+			// struct construction essentially comes down to.
+			if selector, ok := field.RawField.Type.(*ast.SelectorExpr); ok {
+				fieldN = selector.Sel.Name
+			} else if ident, ok := field.RawField.Type.(*ast.Ident); ok {
+				fieldN = ident.Name
+			} else {
+				ctx.pkg.AddError(loader.ErrFromNode(fmt.Errorf("encountered unexpected embedded type"), field.RawField))
+				return props
+			}
+		}
+
+		var overs overrides
+		if allowedFields.Len() > 0 {
+			if !allowedFields.Has(fieldN) {
+				continue
+			} else {
+				overs = c[typN].FieldOverrides[fieldN]
+			}
 		}
 
 		jsonTag, hasTag := field.Tag.Lookup("json")
@@ -379,7 +438,7 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 
 		// if no default required mode is set, default to required
 		defaultMode := "required"
-		if ctx.PackageMarkers.Get("kubebuilder:validation:Optional") != nil {
+		if ctx.PackageMarkers.Get("kubebuilder:validation:Optional") != nil || overs.Optional {
 			defaultMode = "optional"
 		}
 
@@ -405,7 +464,12 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 		} else {
 			propSchema = typeToSchema(ctx.ForInfo(&markers.TypeInfo{}), field.RawField.Type)
 		}
-		propSchema.Description = field.Doc
+
+		if overs.Description != "" {
+			propSchema.Description = overs.Description
+		} else {
+			propSchema.Description = field.Doc
+		}
 
 		applyMarkers(ctx, field.Markers, propSchema, field.RawField)
 
@@ -415,6 +479,10 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 		}
 
 		props.Properties[fieldName] = *propSchema
+	}
+
+	if c[typN].PreserveUnknownFields != nil {
+		props.XPreserveUnknownFields = c[typN].PreserveUnknownFields
 	}
 
 	return props
