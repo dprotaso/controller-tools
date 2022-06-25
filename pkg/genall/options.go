@@ -25,6 +25,8 @@ import (
 
 var (
 	InputPathsMarker = markers.Must(markers.MakeDefinition("paths", markers.DescribesPackage, InputPaths(nil)))
+
+	TypeOverridesPathMarker = markers.Must(markers.MakeDefinition("typeOverrides", markers.DescribesPackage, TypeOverridesPath("")))
 )
 
 // +controllertools:marker:generateHelp:category=""
@@ -34,15 +36,24 @@ var (
 // Multiple paths can be specified using "{path1, path2, path3}".
 type InputPaths []string
 
+// TypeOverridesPath points to a configuration file that overrides type information.
+type TypeOverridesPath string
+
 // RegisterOptionsMarkers registers "mandatory" options markers for FromOptions into the given registry.
 // At this point, that's just InputPaths.
 func RegisterOptionsMarkers(into *markers.Registry) error {
 	if err := into.Register(InputPathsMarker); err != nil {
 		return err
 	}
+	if err := into.Register(TypeOverridesPathMarker); err != nil {
+		return err
+	}
 	// NB(directxman12): we make this optional so we don't have a bootstrap problem with helpgen
 	if helpGiver, hasHelp := ((interface{})(InputPaths(nil))).(HasHelp); hasHelp {
 		into.AddHelp(InputPathsMarker, helpGiver.Help())
+	}
+	if helpGiver, hasHelp := ((interface{})(TypeOverridesPath(""))).(HasHelp); hasHelp {
+		into.AddHelp(TypeOverridesPathMarker, helpGiver.Help())
 	}
 	return nil
 }
@@ -68,13 +79,13 @@ func RegistryFromOptions(optionsRegistry *markers.Registry, options []string) (*
 // a) Generators
 // b) OutputRules
 // c) InputPaths
+// d) TypeOverrides
 //
 // The paths specified in InputPaths are loaded as package roots, and the combined with
 // the generators and the specified output rules to produce a runtime that can be run or
 // further modified.  Not default generators are used if none are specified -- you can check
 // the output and rerun for that.
 func FromOptions(optionsRegistry *markers.Registry, options []string) (*Runtime, error) {
-
 	protoRt, err := protoFromOptions(optionsRegistry, options)
 	if err != nil {
 		return nil, err
@@ -84,6 +95,14 @@ func FromOptions(optionsRegistry *markers.Registry, options []string) (*Runtime,
 	genRuntime, err := protoRt.Generators.ForRoots(protoRt.Paths...)
 	if err != nil {
 		return nil, err
+
+	}
+	if protoRt.TypeOverridesPath != "" {
+		overrides, err := loadOverrides(genRuntime, protoRt.TypeOverridesPath)
+		if err != nil {
+			return nil, err
+		}
+		genRuntime.GenerationContext.TypeOverrides = overrides
 	}
 
 	// attempt to figure out what the user wants without a lot of verbose specificity:
@@ -113,6 +132,7 @@ func protoFromOptions(optionsRegistry *markers.Registry, options []string) (prot
 		ByGenerator: make(map[*Generator]OutputRule),
 	}
 	var paths []string
+	var typeOverridesPath string
 
 	// collect the generators first, so that we can key the output on the actual
 	// generator, which matters if there's settings in the gen object and it's not a pointer.
@@ -152,6 +172,8 @@ func protoFromOptions(optionsRegistry *markers.Registry, options []string) (prot
 			continue
 		case InputPaths:
 			paths = append(paths, val...)
+		case TypeOverridesPath:
+			typeOverridesPath = string(val)
 		default:
 			return protoRuntime{}, fmt.Errorf("unknown option marker %q", defn.Name)
 		}
@@ -168,20 +190,22 @@ func protoFromOptions(optionsRegistry *markers.Registry, options []string) (prot
 	}
 
 	return protoRuntime{
-		Paths:            paths,
-		Generators:       Generators(gens),
-		OutputRules:      rules,
-		GeneratorsByName: gensByName,
+		Paths:             paths,
+		Generators:        Generators(gens),
+		OutputRules:       rules,
+		GeneratorsByName:  gensByName,
+		TypeOverridesPath: typeOverridesPath,
 	}, nil
 }
 
 // protoRuntime represents the raw pieces needed to compose a runtime, as
 // parsed from some options.
 type protoRuntime struct {
-	Paths            []string
-	Generators       Generators
-	OutputRules      OutputRules
-	GeneratorsByName map[string]*Generator
+	Paths             []string
+	Generators        Generators
+	OutputRules       OutputRules
+	GeneratorsByName  map[string]*Generator
+	TypeOverridesPath string
 }
 
 // splitOutputRuleOption splits a marker name of "output:rule:gen" or "output:rule"

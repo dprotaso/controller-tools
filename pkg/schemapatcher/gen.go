@@ -36,7 +36,7 @@ import (
 	yamlop "sigs.k8s.io/controller-tools/pkg/schemapatcher/internal/yaml"
 )
 
-// NB(directxman12): this code is quite fragile, but there are a sufficient
+// NB(directxman12): this code is quste fragile, but there are a sufficient
 // number of corner cases that it's hard to decompose into separate tools.
 // When in doubt, ping @sttts.
 //
@@ -89,8 +89,9 @@ func (Generator) RegisterMarkers(into *markers.Registry) error {
 
 func (g Generator) Generate(ctx *genall.GenerationContext) (result error) {
 	parser := &crdgen.Parser{
-		Collector: ctx.Collector,
-		Checker:   ctx.Checker,
+		Collector:     ctx.Collector,
+		Checker:       ctx.Checker,
+		TypeOverrides: ctx.TypeOverrides,
 		// Indicates the parser on whether to register the ObjectMeta type or not
 		GenerateEmbeddedObjectMeta: g.GenerateEmbeddedObjectMeta != nil && *g.GenerateEmbeddedObjectMeta == true,
 	}

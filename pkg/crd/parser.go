@@ -18,10 +18,12 @@ package crd
 
 import (
 	"fmt"
+	"strings"
 
 	apiext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"sigs.k8s.io/controller-tools/pkg/genall"
 	"sigs.k8s.io/controller-tools/pkg/loader"
 	"sigs.k8s.io/controller-tools/pkg/markers"
 )
@@ -33,7 +35,7 @@ type TypeIdent struct {
 }
 
 func (t TypeIdent) String() string {
-	return fmt.Sprintf("%q.%s", t.Package.ID, t.Name)
+	return fmt.Sprintf("%s.%s", t.Package.ID, t.Name)
 }
 
 // PackageOverride overrides the loading of some package
@@ -65,6 +67,9 @@ type Parser struct {
 	// PackageOverrides indicates that the loading of any package with
 	// the given path should be handled by the given overrider.
 	PackageOverrides map[string]PackageOverride
+
+	// TypeOverrides contain overrides for various types
+	TypeOverrides genall.TypeOverrides
 
 	// checker stores persistent partial type-checking/reference-traversal information.
 	Checker *loader.TypeChecker
@@ -153,9 +158,50 @@ func (p *Parser) indexTypes(pkg *loader.Package) {
 		}
 
 		p.Types[ident] = info
+
+		override, ok := p.TypeOverrides[ident.String()]
+		if !ok {
+			return
+		}
+
+		applyMarkerOverrides(info, override)
+		applyFieldMask(info, override)
+
 	}); err != nil {
 		pkg.AddError(err)
 	}
+}
+
+func applyFieldMask(info *markers.TypeInfo, override genall.TypeOverride) {
+	if len(override.FieldMask) == 0 {
+		return
+	}
+
+	allFields := info.Fields
+	info.Fields = make([]markers.FieldInfo, 0, len(allFields))
+
+	for _, field := range allFields {
+		if override.FieldMask.Has(field.Name) {
+			info.Fields = append(info.Fields, field)
+		}
+	}
+}
+
+func applyMarkerOverrides(info *markers.TypeInfo, overrides genall.TypeOverride) {
+	for name, list := range overrides.AdditionalMarkers {
+		info.Markers[name] = append(info.Markers[name], list...)
+	}
+
+	for _, fieldInfo := range info.Fields {
+		fieldOverrides, ok := overrides.FieldOverrides[fieldInfo.Name]
+		if !ok {
+			continue
+		}
+		for name, list := range fieldOverrides.AdditionalMarkers {
+			fieldInfo.Markers[name] = append(fieldInfo.Markers[name], list...)
+		}
+	}
+
 }
 
 // LookupType fetches type info from Types.
@@ -192,7 +238,61 @@ func (p *Parser) NeedSchemaFor(typ TypeIdent) {
 
 	schema := infoToSchema(ctxForInfo)
 
+	// TODO - At this moment we override the description
+	// In the future we can generically perform a strategic merge patch
+	if override, ok := p.TypeOverrides[typ.String()]; ok {
+		if override.Schema.Description != "" {
+			schema.Description = override.Schema.Description
+		}
+
+		for _, field := range info.Fields {
+			foverride, ok := override.FieldOverrides[field.Name]
+			if !ok {
+				continue
+			}
+
+			fieldName, hasTag, skip, _, _ := getJSONTag(field)
+			if !hasTag || skip {
+				continue
+			}
+
+			if foverride.Schema.Description != "" {
+				fSchema := schema.Properties[fieldName]
+				fSchema.Description = foverride.Schema.Description
+				schema.Properties[fieldName] = fSchema
+			}
+		}
+	}
+
 	p.Schemata[typ] = *schema
+}
+
+func getJSONTag(f markers.FieldInfo) (fieldName string, hasTag, skip, inline, omitEmpty bool) {
+	var jsonTag string
+
+	jsonTag, hasTag = f.Tag.Lookup("json")
+	if !hasTag {
+		return
+	}
+	jsonOpts := strings.Split(jsonTag, ",")
+	if len(jsonOpts) == 1 && jsonOpts[0] == "-" {
+		skip = true
+		return
+	}
+
+	for _, opt := range jsonOpts[1:] {
+		switch opt {
+		case "inline":
+			inline = true
+		case "omitempty":
+			omitEmpty = true
+		}
+	}
+	fieldName = jsonOpts[0]
+	inline = inline || fieldName == "" // anonymous fields are inline fields in YAML/JSON
+
+	return
+
 }
 
 func (p *Parser) NeedFlattenedSchemaFor(typ TypeIdent) {

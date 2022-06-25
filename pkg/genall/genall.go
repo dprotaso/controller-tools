@@ -118,6 +118,8 @@ type GenerationContext struct {
 	// InputRule describes how to load associated boilerplate artifacts.
 	// It should *not* be used to load source files.
 	InputRule
+	// TypeOverrides contains a map potential type overrides
+	TypeOverrides TypeOverrides
 }
 
 // WriteYAMLOptions implements the Options Pattern for WriteYAML.
