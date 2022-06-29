@@ -352,21 +352,6 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 			continue
 		}
 
-		fieldN := field.Name
-		if fieldN == "" {
-			// This is an embedded type. It may either be a pointer type or a direct
-			// identifier. We take it's type name as field name since that's what Golang
-			// struct construction essentially comes down to.
-			if selector, ok := field.RawField.Type.(*ast.SelectorExpr); ok {
-				fieldN = selector.Sel.Name
-			} else if ident, ok := field.RawField.Type.(*ast.Ident); ok {
-				fieldN = ident.Name
-			} else {
-				ctx.pkg.AddError(loader.ErrFromNode(fmt.Errorf("encountered unexpected embedded type"), field.RawField))
-				return props
-			}
-		}
-
 		fieldName, hasTag, skip, inline, omitEmpty := getJSONTag(field)
 
 		if !hasTag {
@@ -407,10 +392,9 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 		} else {
 			propSchema = typeToSchema(ctx.ForInfo(&markers.TypeInfo{}), field.RawField.Type)
 		}
+		propSchema.Description = field.Doc
 
 		applyMarkers(ctx, field.Markers, propSchema, field.RawField)
-
-		propSchema.Description = field.Doc
 
 		if inline {
 			props.AllOf = append(props.AllOf, *propSchema)

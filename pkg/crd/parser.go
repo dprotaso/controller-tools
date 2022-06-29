@@ -18,6 +18,7 @@ package crd
 
 import (
 	"fmt"
+	"go/ast"
 	"strings"
 
 	apiext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -164,15 +165,33 @@ func (p *Parser) indexTypes(pkg *loader.Package) {
 			return
 		}
 
-		applyMarkerOverrides(info, override)
-		applyFieldMask(info, override)
+		applyMarkerOverrides(pkg, info, override)
+		applyFieldMask(pkg, info, override)
 
 	}); err != nil {
 		pkg.AddError(err)
 	}
 }
 
-func applyFieldMask(info *markers.TypeInfo, override genall.TypeOverride) {
+func fieldName(pkg *loader.Package, field markers.FieldInfo) string {
+	if field.Name != "" {
+		return field.Name
+	}
+
+	// This is an embedded type. It may either be a pointer type or a direct
+	// identifier. We take it's type name as field name since that's what Golang
+	// struct construction essentially comes down to.
+	if selector, ok := field.RawField.Type.(*ast.SelectorExpr); ok {
+		return selector.Sel.Name
+	} else if ident, ok := field.RawField.Type.(*ast.Ident); ok {
+		return ident.Name
+	}
+
+	pkg.AddError(loader.ErrFromNode(fmt.Errorf("encountered unexpected embedded type"), field.RawField))
+	return ""
+}
+
+func applyFieldMask(pkg *loader.Package, info *markers.TypeInfo, override genall.TypeOverride) {
 	if len(override.FieldMask) == 0 {
 		return
 	}
@@ -181,19 +200,21 @@ func applyFieldMask(info *markers.TypeInfo, override genall.TypeOverride) {
 	info.Fields = make([]markers.FieldInfo, 0, len(allFields))
 
 	for _, field := range allFields {
-		if override.FieldMask.Has(field.Name) {
+		name := fieldName(pkg, field)
+		if override.FieldMask.Has(name) {
 			info.Fields = append(info.Fields, field)
 		}
 	}
 }
 
-func applyMarkerOverrides(info *markers.TypeInfo, overrides genall.TypeOverride) {
+func applyMarkerOverrides(pkg *loader.Package, info *markers.TypeInfo, overrides genall.TypeOverride) {
 	for name, list := range overrides.AdditionalMarkers {
 		info.Markers[name] = append(info.Markers[name], list...)
 	}
 
 	for _, fieldInfo := range info.Fields {
-		fieldOverrides, ok := overrides.FieldOverrides[fieldInfo.Name]
+		fieldName := fieldName(pkg, fieldInfo)
+		fieldOverrides, ok := overrides.FieldOverrides[fieldName]
 		if !ok {
 			continue
 		}
@@ -201,7 +222,6 @@ func applyMarkerOverrides(info *markers.TypeInfo, overrides genall.TypeOverride)
 			fieldInfo.Markers[name] = append(fieldInfo.Markers[name], list...)
 		}
 	}
-
 }
 
 // LookupType fetches type info from Types.
