@@ -33,10 +33,17 @@ import (
 type TypeIdent struct {
 	Package *loader.Package
 	Name    string
+
+	PathContext string
 }
 
 func (t TypeIdent) String() string {
 	return fmt.Sprintf("%s.%s", t.Package.ID, t.Name)
+}
+
+func (t TypeIdent) DropPathContext() TypeIdent {
+	t.PathContext = ""
+	return t
 }
 
 // PackageOverride overrides the loading of some package
@@ -70,12 +77,15 @@ type Parser struct {
 	PackageOverrides map[string]PackageOverride
 
 	// TypeOverrides contain overrides for various types
-	TypeOverrides genall.TypeOverrides
+	TypeOverrides genall.Overrides
 
 	// checker stores persistent partial type-checking/reference-traversal information.
 	Checker *loader.TypeChecker
 	// packages marks packages as loaded, to avoid re-loading them.
 	packages map[*loader.Package]struct{}
+	// overriddenSchemata tracks which schemas that were overridden
+	// by the package overrides
+	overriddenSchemata map[TypeIdent]apiext.JSONSchemaProps
 
 	flattener *Flattener
 
@@ -111,6 +121,9 @@ func (p *Parser) init() {
 	}
 	if p.Schemata == nil {
 		p.Schemata = make(map[TypeIdent]apiext.JSONSchemaProps)
+	}
+	if p.overriddenSchemata == nil {
+		p.overriddenSchemata = make(map[TypeIdent]apiext.JSONSchemaProps)
 	}
 	if p.Types == nil {
 		p.Types = make(map[TypeIdent]*markers.TypeInfo)
@@ -159,15 +172,6 @@ func (p *Parser) indexTypes(pkg *loader.Package) {
 		}
 
 		p.Types[ident] = info
-
-		override, ok := p.TypeOverrides[ident.String()]
-		if !ok {
-			return
-		}
-
-		applyMarkerOverrides(pkg, info, override)
-		applyFieldMask(pkg, info, override)
-
 	}); err != nil {
 		pkg.AddError(err)
 	}
@@ -191,35 +195,16 @@ func fieldName(pkg *loader.Package, field markers.FieldInfo) string {
 	return ""
 }
 
-func applyFieldMask(pkg *loader.Package, info *markers.TypeInfo, override genall.TypeOverride) {
+func applyFieldMask(pkg *loader.Package, info *markers.TypeInfo, override *genall.Override, schema *apiext.JSONSchemaProps) {
 	if len(override.FieldMask) == 0 {
 		return
 	}
 
-	allFields := info.Fields
-	info.Fields = make([]markers.FieldInfo, 0, len(allFields))
-
-	for _, field := range allFields {
+	for _, field := range info.Fields {
 		name := fieldName(pkg, field)
-		if override.FieldMask.Has(name) {
-			info.Fields = append(info.Fields, field)
-		}
-	}
-}
-
-func applyMarkerOverrides(pkg *loader.Package, info *markers.TypeInfo, overrides genall.TypeOverride) {
-	for name, list := range overrides.AdditionalMarkers {
-		info.Markers[name] = append(info.Markers[name], list...)
-	}
-
-	for _, fieldInfo := range info.Fields {
-		fieldName := fieldName(pkg, fieldInfo)
-		fieldOverrides, ok := overrides.FieldOverrides[fieldName]
-		if !ok {
-			continue
-		}
-		for name, list := range fieldOverrides.AdditionalMarkers {
-			fieldInfo.Markers[name] = append(fieldInfo.Markers[name], list...)
+		if !override.FieldMask.Has(name) {
+			jsonTag, _, _, _, _ := getJSONTag(field)
+			delete(schema.Properties, jsonTag)
 		}
 	}
 }
@@ -232,56 +217,53 @@ func (p *Parser) LookupType(pkg *loader.Package, name string) *markers.TypeInfo 
 // NeedSchemaFor indicates that a schema should be generated for the given type.
 func (p *Parser) NeedSchemaFor(typ TypeIdent) {
 	p.init()
-
 	p.NeedPackage(typ.Package)
+
 	if _, knownSchema := p.Schemata[typ]; knownSchema {
 		return
 	}
 
-	info, knownInfo := p.Types[typ]
-	if !knownInfo {
+	info, knownType := p.Types[typ.DropPathContext()]
+	// No point in calling AddPackage, this is the sole inhabitant
+	if !knownType {
 		typ.Package.AddError(fmt.Errorf("unknown type %s", typ))
 		return
 	}
 
-	// avoid tripping recursive schemata, like ManagedFields, by adding an empty WIP schema
-	p.Schemata[typ] = apiext.JSONSchemaProps{}
-
-	schemaCtx := newSchemaContext(typ.Package, p, p.AllowDangerousTypes, p.IgnoreUnexportedFields)
-	ctxForInfo := schemaCtx.ForInfo(info)
+	ctx := newSchemaContext(
+		typ.Package,
+		p,
+		p.AllowDangerousTypes,
+		p.IgnoreUnexportedFields,
+		p.TypeOverrides,
+		typ.PathContext).ForType(info)
 
 	pkgMarkers, err := markers.PackageMarkers(p.Collector, typ.Package)
 	if err != nil {
 		typ.Package.AddError(err)
 	}
-	ctxForInfo.PackageMarkers = pkgMarkers
+	ctx.PackageMarkers = pkgMarkers
 
-	schema := infoToSchema(ctxForInfo)
+	var schema *apiext.JSONSchemaProps
 
-	// TODO - At this moment we override the description
-	// In the future we can generically perform a strategic merge patch
-	if override, ok := p.TypeOverrides[typ.String()]; ok {
+	// If they type is overriden by a custom packagel loader just
+	// load the provided schema
+	if _, ok := p.overriddenSchemata[typ.DropPathContext()]; ok {
+		s := p.Schemata[typ.DropPathContext()]
+		schema = &s
+	} else {
+		// avoid tripping recursive schemata, like ManagedFields, by adding an empty WIP schema
+		p.Schemata[typ] = apiext.JSONSchemaProps{}
+		schema = infoToSchema(ctx)
+	}
+
+	override := ctx.override
+	if override != nil {
+		// TODO(allow additional overrides beyond the description ie. merge schemas)
 		if override.Schema.Description != "" {
 			schema.Description = override.Schema.Description
 		}
-
-		for _, field := range info.Fields {
-			foverride, ok := override.FieldOverrides[field.Name]
-			if !ok {
-				continue
-			}
-
-			fieldName, hasTag, skip, _, _ := getJSONTag(field)
-			if !hasTag || skip {
-				continue
-			}
-
-			if foverride.Schema.Description != "" {
-				fSchema := schema.Properties[fieldName]
-				fSchema.Description = foverride.Schema.Description
-				schema.Properties[fieldName] = fSchema
-			}
-		}
+		applyFieldMask(typ.Package, info, override, schema)
 	}
 
 	p.Schemata[typ] = *schema
@@ -355,7 +337,17 @@ func (p *Parser) NeedPackage(pkg *loader.Package) {
 	// overrides are going to be written without vendor.  This is why we index by the actual
 	// object when we can.
 	if override, overridden := p.PackageOverrides[loader.NonVendorPath(pkg.PkgPath)]; overridden {
+		// We want to capture that types that have been overridden
+		// we do it this way so we don't break the PackageOverrides interface
+		old := p.Schemata
+		p.Schemata = p.overriddenSchemata
 		override(p, pkg)
+		p.Schemata = old
+
+		for typ, schema := range p.overriddenSchemata {
+			p.Schemata[typ] = schema
+		}
+
 		p.packages[pkg] = struct{}{}
 		return
 	}

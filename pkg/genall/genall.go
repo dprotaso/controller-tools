@@ -119,7 +119,7 @@ type GenerationContext struct {
 	// It should *not* be used to load source files.
 	InputRule
 	// TypeOverrides contains a map potential type overrides
-	TypeOverrides TypeOverrides
+	TypeOverrides Overrides
 }
 
 // WriteYAMLOptions implements the Options Pattern for WriteYAML.

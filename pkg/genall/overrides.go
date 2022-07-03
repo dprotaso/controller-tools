@@ -27,33 +27,38 @@ import (
 	"sigs.k8s.io/controller-tools/pkg/markers"
 )
 
-type TypeOverrides map[string]TypeOverride
+type Overrides map[string]*Override
 
-type TypeOverride struct {
-	Schema            apiext.JSONSchemaProps
+type Override struct {
+	// Schema specifices a partial patch that should be applied to the target
+	// type or field
+	Schema apiext.JSONSchemaProps
+
+	// AdditionalMarkers specifies the extra markers that should apply
+	// to this type or field
 	AdditionalMarkers markers.MarkerValues
-	FieldMask         sets.String
-	FieldOverrides    map[string]FieldOverride
+
+	// FieldMask signals fields that should be included for struct types
+	// An empty set implies all fields should remain
+	FieldMask sets.String
+
+	// FieldOverrides applies to fields in structs
+	FieldOverrides Overrides
+
+	// ItemOverride applies to items in arrays or map values
+	ItemOverride *Override
 }
 
-type FieldOverride struct {
-	Schema            apiext.JSONSchemaProps
-	AdditionalMarkers markers.MarkerValues
+type yamlOverride struct {
+	Schema            apiext.JSONSchemaProps  `yaml:",inline"`
+	AdditionalMarkers []string                `yaml:"additionalMarkers"`
+	FieldMask         []string                `yaml:"fieldMask"`
+	FieldOverrides    map[string]yamlOverride `yaml:"fieldOverrides"`
+	ItemOverride      *yamlOverride           `yaml:"itemOverride"`
+	TypeOverride      *yamlOverride           `yaml:"typeOverride"`
 }
 
-type yamlTypeOverride struct {
-	Schema            apiext.JSONSchemaProps       `yaml:",inline"`
-	AdditionalMarkers []string                     `yaml:"additionalMarkers"`
-	FieldMask         []string                     `yaml:"fieldMask"`
-	FieldOverrides    map[string]yamlFieldOverride `yaml:"fieldOverrides"`
-}
-
-type yamlFieldOverride struct {
-	Schema            apiext.JSONSchemaProps `yaml:",inline"`
-	AdditionalMarkers []string               `yaml:"additionalMarkers"`
-}
-
-func loadOverrides(runtime *Runtime, configPath string) (map[string]TypeOverride, error) {
+func loadOverrides(runtime *Runtime, configPath string) (Overrides, error) {
 	yamlBytes, err := os.ReadFile(configPath)
 
 	if err != nil {
@@ -62,41 +67,54 @@ func loadOverrides(runtime *Runtime, configPath string) (map[string]TypeOverride
 	d := yaml.NewDecoder(bytes.NewReader(yamlBytes))
 	d.KnownFields(true)
 
-	yConfig := map[string]yamlTypeOverride{}
+	yConfig := map[string]yamlOverride{}
 	if err := d.Decode(&yConfig); err != nil {
 		return nil, fmt.Errorf("failed to parse type override config: %w", err)
 	}
 
 	registry := runtime.Collector.Registry
 
-	c := make(TypeOverrides, len(yConfig))
+	c := make(Overrides, len(yConfig))
 	for typeName, yType := range yConfig {
-		t := TypeOverride{
-			Schema:            yType.Schema,
-			FieldMask:         sets.NewString(yType.FieldMask...),
-			FieldOverrides:    make(map[string]FieldOverride, len(yType.FieldOverrides)),
-			AdditionalMarkers: make(markers.MarkerValues, len(yType.AdditionalMarkers)),
-		}
-
-		if err := parseMarkers(registry, markers.DescribesType, yType.AdditionalMarkers, t.AdditionalMarkers); err != nil {
-			return nil, fmt.Errorf("failed to parse additional marker for type %q: %w", typeName, err)
-		}
-
-		for fieldName, yField := range yType.FieldOverrides {
-			f := FieldOverride{
-				Schema:            yField.Schema,
-				AdditionalMarkers: make(markers.MarkerValues, len(yField.AdditionalMarkers)),
-			}
-			if err := parseMarkers(registry, markers.DescribesField, yField.AdditionalMarkers, f.AdditionalMarkers); err != nil {
-				key := fmt.Sprintf("%s.%s", typeName, fieldName)
-				return nil, fmt.Errorf("failed to parse additional marker for type field %q: %w", key, err)
-			}
-
-			t.FieldOverrides[fieldName] = f
+		t, err := convertOverride(registry, typeName, yType)
+		if err != nil {
+			return nil, err
 		}
 		c[typeName] = t
 	}
+
 	return c, nil
+}
+
+func convertOverride(registry *markers.Registry, name string, yo yamlOverride) (*Override, error) {
+	t := &Override{
+		Schema:            yo.Schema,
+		FieldMask:         sets.NewString(yo.FieldMask...),
+		FieldOverrides:    make(map[string]*Override, len(yo.FieldOverrides)),
+		AdditionalMarkers: make(markers.MarkerValues, len(yo.AdditionalMarkers)),
+	}
+
+	if err := parseMarkers(registry, markers.DescribesField, yo.AdditionalMarkers, t.AdditionalMarkers); err != nil {
+		return nil, fmt.Errorf("failed to parse additional marker for type %q: %w", name, err)
+	}
+
+	for fieldName, yField := range yo.FieldOverrides {
+		f, err := convertOverride(registry, name+".fieldOverrides."+fieldName, yField)
+		if err != nil {
+			return nil, err
+		}
+		t.FieldOverrides[fieldName] = f
+	}
+
+	if yo.ItemOverride != nil {
+		i, err := convertOverride(registry, name+".itemOverride", *yo.ItemOverride)
+		if err != nil {
+			return nil, err
+		}
+		t.ItemOverride = i
+	}
+
+	return t, nil
 }
 
 func parseMarkers(registry *markers.Registry, targetType markers.TargetType, additionalMarkers []string, target markers.MarkerValues) error {

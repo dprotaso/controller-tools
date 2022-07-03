@@ -284,31 +284,44 @@ func (f *Flattener) FlattenSchema(baseSchema apiext.JSONSchemaProps, currentPack
 	return resSchema
 }
 
-// RefParts splits a reference produced by the schema generator into its component
+// StringRefParts splits a reference produced by the schema generator into its component
 // type name and package name (if it's a cross-package reference).  Note that
 // referenced packages *must* be looked up relative to the current package.
-func RefParts(ref string) (typ string, pkgName string, err error) {
+func RefParts(ref string) (pathContext, typ string, pkgName string, err error) {
 	if !strings.HasPrefix(ref, defPrefix) {
-		return "", "", fmt.Errorf("non-standard reference link %q", ref)
+		return "", "", "", fmt.Errorf("non-standard reference link %q", ref)
 	}
+	var typeContext string
 	ref = ref[len(defPrefix):]
+	vals := strings.SplitN(ref, "/", 2)
+
+	if len(vals) == 1 {
+		typeContext = vals[0]
+	} else {
+		pathContext = vals[0]
+		typeContext = vals[1]
+	}
+
 	// decode the json pointer encodings
-	ref = strings.Replace(ref, "~1", "/", -1)
-	ref = strings.Replace(ref, "~0", "~", -1)
-	nameParts := strings.SplitN(ref, "~", 2)
+	typeContext = strings.Replace(typeContext, "~1", "/", -1)
+	typeContext = strings.Replace(typeContext, "~0", "~", -1)
+	pathContext = strings.Replace(pathContext, "~1", "/", -1)
+	pathContext = strings.Replace(pathContext, "~0", "~", -1)
+
+	nameParts := strings.SplitN(typeContext, "~", 2)
 
 	if len(nameParts) == 1 {
 		// local reference
-		return nameParts[0], "", nil
+		return pathContext, nameParts[0], "", nil
 	}
 	// cross-package reference
-	return nameParts[1], nameParts[0], nil
+	return pathContext, nameParts[1], nameParts[0], nil
 }
 
 // identFromRef converts the given schema ref from the given package back
 // into the TypeIdent that it represents.
 func identFromRef(ref string, contextPkg *loader.Package) (TypeIdent, error) {
-	typ, pkgName, err := RefParts(ref)
+	pathContext, typ, pkgName, err := RefParts(ref)
 	if err != nil {
 		return TypeIdent{}, err
 	}
@@ -316,15 +329,17 @@ func identFromRef(ref string, contextPkg *loader.Package) (TypeIdent, error) {
 	if pkgName == "" {
 		// a local reference
 		return TypeIdent{
-			Name:    typ,
-			Package: contextPkg,
+			Name:        typ,
+			Package:     contextPkg,
+			PathContext: pathContext,
 		}, nil
 	}
 
 	// an external reference
 	return TypeIdent{
-		Name:    typ,
-		Package: contextPkg.Imports()[pkgName],
+		Name:        typ,
+		Package:     contextPkg.Imports()[pkgName],
+		PathContext: pathContext,
 	}, nil
 }
 

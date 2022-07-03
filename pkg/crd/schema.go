@@ -27,6 +27,7 @@ import (
 
 	apiext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	crdmarkers "sigs.k8s.io/controller-tools/pkg/crd/markers"
+	"sigs.k8s.io/controller-tools/pkg/genall"
 
 	"sigs.k8s.io/controller-tools/pkg/loader"
 	"sigs.k8s.io/controller-tools/pkg/markers"
@@ -62,6 +63,18 @@ type schemaRequester interface {
 	NeedSchemaFor(typ TypeIdent)
 }
 
+type PathContext struct {
+	Name   string
+	Parent *PathContext
+}
+
+func (s PathContext) String() string {
+	if s.Parent != nil {
+		return fmt.Sprintf("%s::%s", s.Parent, s.Name)
+	}
+	return s.Name
+}
+
 // schemaContext stores and provides information across a hierarchy of schema generation.
 type schemaContext struct {
 	pkg  *loader.Package
@@ -72,30 +85,102 @@ type schemaContext struct {
 
 	allowDangerousTypes    bool
 	ignoreUnexportedFields bool
+	overrides              genall.Overrides
+
+	path     string
+	override *genall.Override
 }
 
 // newSchemaContext constructs a new schemaContext for the given package and schema requester.
 // It must have type info added before use via ForInfo.
-func newSchemaContext(pkg *loader.Package, req schemaRequester, allowDangerousTypes, ignoreUnexportedFields bool) *schemaContext {
+func newSchemaContext(pkg *loader.Package,
+	req schemaRequester,
+	allowDangerousTypes,
+	ignoreUnexportedFields bool,
+	overrides genall.Overrides,
+	path string,
+) *schemaContext {
+
 	pkg.NeedTypesInfo()
 	return &schemaContext{
 		pkg:                    pkg,
 		schemaRequester:        req,
 		allowDangerousTypes:    allowDangerousTypes,
 		ignoreUnexportedFields: ignoreUnexportedFields,
+		overrides:              overrides,
+		path:                   path,
 	}
+}
+
+func (c *schemaContext) copy() *schemaContext {
+	kopy := *c
+	return &kopy
+}
+
+func splitSegment(segment string) (string, string) {
+	portions := strings.SplitN(segment, ":", 2)
+	segmentType := portions[0]
+	segmentVal := portions[1]
+	return segmentType, segmentVal
 }
 
 // ForInfo produces a new schemaContext with containing the same information
 // as this one, except with the given type information.
-func (c *schemaContext) ForInfo(info *markers.TypeInfo) *schemaContext {
-	return &schemaContext{
-		pkg:                    c.pkg,
-		info:                   info,
-		schemaRequester:        c.schemaRequester,
-		allowDangerousTypes:    c.allowDangerousTypes,
-		ignoreUnexportedFields: c.ignoreUnexportedFields,
+func (c *schemaContext) ForType(info *markers.TypeInfo) *schemaContext {
+	s := c.copy()
+	s.info = info
+
+	if s.path != "" {
+		segments := strings.Split(s.path, "::")
+
+		segmentType, segmentVal := splitSegment(segments[0])
+		if segmentType != "type" {
+			panic("segmentType should be 'type'")
+		}
+		// First segment is a type
+		s.override = s.overrides[segmentVal]
+
+		for i := 1; i < len(segments); i++ {
+			segmentType, segmentVal := splitSegment(segments[i])
+			if segmentType == "type" {
+				// nested types in the override config are implicitly typed
+			} else if segmentType == "collection" {
+				s.override = s.override.ItemOverride
+			} else if segmentType == "field" {
+				s.override = s.override.FieldOverrides[segmentVal]
+			} else {
+				// TODO: panic
+			}
+		}
+
+		s.path = fmt.Sprintf("%s::type:%s.%s", s.path, info.Package.PkgPath, info.Name)
+	} else {
+		key := fmt.Sprintf("%s.%s", info.Package.PkgPath, info.Name)
+		s.path = fmt.Sprintf("type:%s", key)
+		s.override = s.overrides[key]
 	}
+
+	return s
+}
+
+func (c *schemaContext) ForCollection() *schemaContext {
+	s := c.copy()
+	s.info = &markers.TypeInfo{}
+	if s.override != nil {
+		s.path = fmt.Sprintf("%s::collection:[]", s.path)
+		s.override = s.override.ItemOverride
+	}
+	return s
+}
+
+func (c *schemaContext) ForField(name string) *schemaContext {
+	s := c.copy()
+	s.info = &markers.TypeInfo{}
+	s.path = fmt.Sprintf("%s::field:%s", s.path, name)
+	if s.override != nil {
+		s.override = s.override.FieldOverrides[name]
+	}
+	return s
 }
 
 // requestSchema asks for the schema for a type in the package with the
@@ -105,10 +190,21 @@ func (c *schemaContext) requestSchema(pkgPath, typeName string) {
 	if pkgPath != "" {
 		pkg = c.pkg.Imports()[pkgPath]
 	}
+
 	c.schemaRequester.NeedSchemaFor(TypeIdent{
-		Package: pkg,
-		Name:    typeName,
+		Package:     pkg,
+		Name:        typeName,
+		PathContext: c.pathContext(),
 	})
+}
+
+func (c *schemaContext) pathContext() string {
+	pathContext := ""
+	// Only include a path context if there's an override for this specific type
+	if c.override != nil {
+		pathContext = c.path
+	}
+	return pathContext
 }
 
 // infoToSchema creates a schema for the type in the given set of type information.
@@ -201,16 +297,24 @@ func typeToSchema(ctx *schemaContext, rawType ast.Expr) *apiext.JSONSchemaProps 
 // (`<typeName>` or `<safePkgPath>~0<typeName>`, where `<safePkgPath>`
 // is the package path with `/` replaced by `~1`, according to JSONPointer
 // escapes).
-func qualifiedName(pkgName, typeName string) string {
-	if pkgName != "" {
-		return strings.Replace(pkgName, "/", "~1", -1) + "~0" + typeName
+func qualifiedName(pathContext, pkgName, typeName string) (res string) {
+	var sb strings.Builder
+	if pathContext != "" {
+		sb.WriteString(strings.ReplaceAll(pathContext, "/", "~1"))
+		sb.WriteString("/")
 	}
-	return typeName
+
+	if pkgName != "" {
+		sb.WriteString(strings.ReplaceAll(pkgName, "/", "~1"))
+		sb.WriteString("~0")
+	}
+	sb.WriteString(typeName)
+	return sb.String()
 }
 
 // TypeRefLink creates a definition link for the given type and package.
-func TypeRefLink(pkgName, typeName string) string {
-	return defPrefix + qualifiedName(pkgName, typeName)
+func TypeRefLink(pathContext string, pkgName, typeName string) string {
+	return defPrefix + qualifiedName(pathContext, pkgName, typeName)
 }
 
 // localNamedToSchema creates a schema (ref) for a *potentially* local type reference
@@ -240,7 +344,7 @@ func localNamedToSchema(ctx *schemaContext, ident *ast.Ident) *apiext.JSONSchema
 		pkgPath = ""
 	}
 	ctx.requestSchema(pkgPath, typeNameInfo.Name())
-	link := TypeRefLink(pkgPath, typeNameInfo.Name())
+	link := TypeRefLink(ctx.pathContext(), pkgPath, typeNameInfo.Name())
 	return &apiext.JSONSchemaProps{
 		Ref: &link,
 	}
@@ -257,7 +361,7 @@ func namedToSchema(ctx *schemaContext, named *ast.SelectorExpr) *apiext.JSONSche
 	typeNameInfo := typeInfo.Obj()
 	nonVendorPath := loader.NonVendorPath(typeNameInfo.Pkg().Path())
 	ctx.requestSchema(nonVendorPath, typeNameInfo.Name())
-	link := TypeRefLink(nonVendorPath, typeNameInfo.Name())
+	link := TypeRefLink(ctx.pathContext(), nonVendorPath, typeNameInfo.Name())
 	return &apiext.JSONSchemaProps{
 		Ref: &link,
 	}
@@ -277,7 +381,7 @@ func arrayToSchema(ctx *schemaContext, array *ast.ArrayType) *apiext.JSONSchemaP
 		}
 	}
 	// TODO(directxman12): backwards-compat would require access to markers from base info
-	items := typeToSchema(ctx.ForInfo(&markers.TypeInfo{}), array.Elt)
+	items := typeToSchema(ctx.ForCollection(), array.Elt)
 
 	return &apiext.JSONSchemaProps{
 		Type:  "array",
@@ -310,15 +414,15 @@ func mapToSchema(ctx *schemaContext, mapType *ast.MapType) *apiext.JSONSchemaPro
 	var valSchema *apiext.JSONSchemaProps
 	switch val := mapType.Value.(type) {
 	case *ast.Ident:
-		valSchema = localNamedToSchema(ctx.ForInfo(&markers.TypeInfo{}), val)
+		valSchema = localNamedToSchema(ctx.ForCollection(), val)
 	case *ast.SelectorExpr:
-		valSchema = namedToSchema(ctx.ForInfo(&markers.TypeInfo{}), val)
+		valSchema = namedToSchema(ctx.ForCollection(), val)
 	case *ast.ArrayType:
-		valSchema = arrayToSchema(ctx.ForInfo(&markers.TypeInfo{}), val)
+		valSchema = arrayToSchema(ctx.ForCollection(), val)
 	case *ast.StarExpr:
-		valSchema = typeToSchema(ctx.ForInfo(&markers.TypeInfo{}), val)
+		valSchema = typeToSchema(ctx.ForCollection(), val)
 	case *ast.MapType:
-		valSchema = typeToSchema(ctx.ForInfo(&markers.TypeInfo{}), val)
+		valSchema = typeToSchema(ctx.ForCollection(), val)
 	default:
 		ctx.pkg.AddError(loader.ErrFromNode(fmt.Errorf("not a supported map value type: %T", mapType.Value), mapType.Value))
 		return &apiext.JSONSchemaProps{}
@@ -351,8 +455,13 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 		if field.Name != "" && ctx.ignoreUnexportedFields && !ast.IsExported(field.Name) {
 			continue
 		}
+		var fOverride *genall.Override
+		if ctx.override != nil {
+			fOverride = ctx.override.FieldOverrides[fieldName(ctx.pkg, field)]
+		}
+		markers := overrideMarkers(field.Markers, fOverride)
 
-		fieldName, hasTag, skip, inline, omitEmpty := getJSONTag(field)
+		jsonFieldName, hasTag, skip, inline, omitEmpty := getJSONTag(field)
 
 		if !hasTag {
 			// if the field doesn't have a JSON tag, it doesn't belong in output (and shouldn't exist in a serialized type)
@@ -374,37 +483,59 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 		// if this package isn't set to optional default...
 		case "required":
 			// ...everything that's not inline, omitempty, or explicitly optional is required
-			if !inline && !omitEmpty && field.Markers.Get("kubebuilder:validation:Optional") == nil && field.Markers.Get("optional") == nil {
-				props.Required = append(props.Required, fieldName)
+			if !inline && !omitEmpty && markers.Get("kubebuilder:validation:Optional") == nil && markers.Get("optional") == nil {
+				props.Required = append(props.Required, jsonFieldName)
 			}
 
 		// if this package isn't set to required default...
 		case "optional":
 			// ...everything that isn't explicitly required is optional
-			if field.Markers.Get("kubebuilder:validation:Required") != nil {
-				props.Required = append(props.Required, fieldName)
+			if markers.Get("kubebuilder:validation:Required") != nil {
+				props.Required = append(props.Required, jsonFieldName)
 			}
 		}
 
 		var propSchema *apiext.JSONSchemaProps
-		if field.Markers.Get(crdmarkers.SchemalessName) != nil {
+		if markers.Get(crdmarkers.SchemalessName) != nil {
 			propSchema = &apiext.JSONSchemaProps{}
 		} else {
-			propSchema = typeToSchema(ctx.ForInfo(&markers.TypeInfo{}), field.RawField.Type)
+			fieldName := fieldName(ctx.info.Package, field)
+			propSchema = typeToSchema(ctx.ForField(fieldName), field.RawField.Type)
 		}
 		propSchema.Description = field.Doc
 
-		applyMarkers(ctx, field.Markers, propSchema, field.RawField)
+		applyMarkers(ctx, markers, propSchema, field.RawField)
 
 		if inline {
 			props.AllOf = append(props.AllOf, *propSchema)
 			continue
 		}
 
-		props.Properties[fieldName] = *propSchema
+		if fOverride != nil && fOverride.Schema.Description != "" {
+			propSchema.Description = fOverride.Schema.Description
+		}
+
+		props.Properties[jsonFieldName] = *propSchema
 	}
 
 	return props
+}
+
+func overrideMarkers(org markers.MarkerValues, override *genall.Override) markers.MarkerValues {
+	if override == nil || len(override.AdditionalMarkers) == 0 {
+		return org
+	}
+
+	vals := make(markers.MarkerValues, len(org)+len(override.AdditionalMarkers))
+
+	for k, v := range org {
+		vals[k] = append(vals[k], v...)
+	}
+	for k, v := range override.AdditionalMarkers {
+		vals[k] = append(vals[k], v...)
+	}
+
+	return vals
 }
 
 // builtinToType converts builtin basic types to their equivalent JSON schema form.

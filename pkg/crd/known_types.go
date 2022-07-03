@@ -68,7 +68,7 @@ var KnownPackages = map[string]PackageOverride{
 			},
 			Pattern: "^(\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$",
 		}
-		// No point in calling AddPackage, this is the sole inhabitant
+		p.AddPackage(pkg)
 	},
 
 	"k8s.io/apimachinery/pkg/runtime": func(p *Parser, pkg *loader.Package) {
@@ -95,7 +95,7 @@ var KnownPackages = map[string]PackageOverride{
 				{Type: "string"},
 			},
 		}
-		// No point in calling AddPackage, this is the sole inhabitant
+		p.AddPackage(pkg) // get the rest of the types
 	},
 
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1": func(p *Parser, pkg *loader.Package) {
@@ -156,6 +156,7 @@ var ObjectMetaPackages = map[string]PackageOverride{
 				},
 			},
 		}
+		p.AddPackage(pkg)
 	},
 }
 

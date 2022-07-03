@@ -38,6 +38,7 @@ var SchemaOperationMarkers = []*definitionWithHelp{
 type DropProperties struct{}
 
 func (d DropProperties) ApplyToSchema(schema *apiext.JSONSchemaProps) error {
+	schema.Ref = nil
 	schema.Properties = nil
 	schema.Items = nil
 	schema.AdditionalProperties = nil
