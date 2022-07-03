@@ -132,6 +132,10 @@ type FieldInfo struct {
 type TypeInfo struct {
 	// Name is the name of the type.
 	Name string
+
+	// Package contains details about the type's package
+	Package *loader.Package
+
 	// Doc is the Godoc of the type, pre-processed to remove markers and joine
 	// single newlines together.
 	Doc string
@@ -196,6 +200,7 @@ func EachType(col *Collector, pkg *loader.Package, cb TypeCallback) error {
 
 		cb(&TypeInfo{
 			Name:    spec.Name.Name,
+			Package: pkg,
 			Markers: markers[spec],
 			Doc:     extractDoc(spec, decl),
 			Fields:  fields,
