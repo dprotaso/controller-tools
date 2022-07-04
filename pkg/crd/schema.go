@@ -288,7 +288,8 @@ func typeToSchema(ctx *schemaContext, rawType ast.Expr) *apiext.JSONSchemaProps 
 
 	props.Description = ctx.info.Doc
 
-	applyMarkers(ctx, ctx.info.Markers, props, rawType)
+	markers := overrideMarkers(ctx.info.Markers, ctx.override)
+	applyMarkers(ctx, markers, props, rawType)
 
 	return props
 }

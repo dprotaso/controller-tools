@@ -95,6 +95,10 @@ func convertOverride(registry *markers.Registry, name string, yo yamlOverride) (
 	}
 
 	if err := parseMarkers(registry, markers.DescribesField, yo.AdditionalMarkers, t.AdditionalMarkers); err != nil {
+		return nil, fmt.Errorf("failed to parse additional marker for field %q: %w", name, err)
+	}
+
+	if err := parseMarkers(registry, markers.DescribesType, yo.AdditionalMarkers, t.AdditionalMarkers); err != nil {
 		return nil, fmt.Errorf("failed to parse additional marker for type %q: %w", name, err)
 	}
 
