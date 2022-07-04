@@ -456,10 +456,10 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 		if field.Name != "" && ctx.ignoreUnexportedFields && !ast.IsExported(field.Name) {
 			continue
 		}
-		var fOverride *genall.Override
-		if ctx.override != nil {
-			fOverride = ctx.override.FieldOverrides[fieldName(ctx.pkg, field)]
-		}
+
+		fieldName := fieldName(ctx.info.Package, field)
+		fctx := ctx.ForField(fieldName)
+		fOverride := fctx.override
 		markers := overrideMarkers(field.Markers, fOverride)
 
 		jsonFieldName, hasTag, skip, inline, omitEmpty := getJSONTag(field)
@@ -476,7 +476,7 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 
 		// if no default required mode is set, default to required
 		defaultMode := "required"
-		if ctx.PackageMarkers.Get("kubebuilder:validation:Optional") != nil {
+		if fctx.PackageMarkers.Get("kubebuilder:validation:Optional") != nil {
 			defaultMode = "optional"
 		}
 
@@ -500,20 +500,32 @@ func structToSchema(ctx *schemaContext, structType *ast.StructType) *apiext.JSON
 		if markers.Get(crdmarkers.SchemalessName) != nil {
 			propSchema = &apiext.JSONSchemaProps{}
 		} else {
-			fieldName := fieldName(ctx.info.Package, field)
-			propSchema = typeToSchema(ctx.ForField(fieldName), field.RawField.Type)
+			propSchema = typeToSchema(fctx, field.RawField.Type)
 		}
 		propSchema.Description = field.Doc
 
-		applyMarkers(ctx, markers, propSchema, field.RawField)
+		applyMarkers(fctx, markers, propSchema, field.RawField)
+
+		// Field level override
+		if fOverride != nil && fOverride.Schema.Description != "" {
+			propSchema.Description = fOverride.Schema.Description
+		} else if propSchema.Ref != nil {
+			// If we don't have a field override look up a global
+			// type override for the description
+			typ, err := identFromRef(*propSchema.Ref, ctx.pkg)
+			if err != nil {
+				panic(err)
+			}
+			key := fmt.Sprintf("%s.%s", typ.Package.PkgPath, typ.Name)
+			typeOverride, ok := ctx.overrides[key]
+			if ok && typeOverride.Schema.Description != "" {
+				propSchema.Description = typeOverride.Schema.Description
+			}
+		}
 
 		if inline {
 			props.AllOf = append(props.AllOf, *propSchema)
 			continue
-		}
-
-		if fOverride != nil && fOverride.Schema.Description != "" {
-			propSchema.Description = fOverride.Schema.Description
 		}
 
 		props.Properties[jsonFieldName] = *propSchema
