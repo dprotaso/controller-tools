@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	DropPropertiesName = "kubebuilder:validation:DropProperties"
+	DropPropertiesName    = "kubebuilder:validation:DropProperties"
+	DropListMapMarkerName = "kubebuilder:validation:DropListMapMarkers"
 )
 
 var SchemaOperationMarkers = []*definitionWithHelp{
@@ -29,6 +30,11 @@ var SchemaOperationMarkers = []*definitionWithHelp{
 		WithHelp(DropProperties{}.Help()),
 	must(markers.MakeDefinition(DropPropertiesName, markers.DescribesField, DropProperties{})).
 		WithHelp(DropProperties{}.Help()),
+
+	must(markers.MakeDefinition(DropListMapMarkerName, markers.DescribesType, DropListMapMarker{})).
+		WithHelp(DropListMapMarker{}.Help()),
+	must(markers.MakeDefinition(DropListMapMarkerName, markers.DescribesField, DropListMapMarker{})).
+		WithHelp(DropListMapMarker{}.Help()),
 }
 
 // +controllertools:marker:generateHelp:category="CRD validation"
@@ -43,7 +49,20 @@ func (d DropProperties) ApplyToSchema(schema *apiext.JSONSchemaProps) error {
 	schema.Items = nil
 	schema.AdditionalProperties = nil
 	schema.AdditionalItems = nil
-	schema.XListMapKeys = nil
+	return nil
+}
+
+// +controllertools:marker:generateHelp:category="CRD validation"
+// DropListMapMarker drops the x-kubernetes-list-map-keys property
+//
+// Typically this should be paired with PreserveUnknownFields && DropProperties
+type DropListMapMarker struct{}
+
+func (d DropListMapMarker) ApplyToSchema(schema *apiext.JSONSchemaProps) error {
+	if schema.XListType != nil && *schema.XListType == "map" {
+		schema.XListType = nil
+		schema.XListMapKeys = nil
+	}
 	return nil
 }
 

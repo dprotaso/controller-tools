@@ -56,6 +56,17 @@ func (DeprecatedVersion) Help() *markers.DefinitionHelp {
 	}
 }
 
+func (DropListMapMarker) Help() *markers.DefinitionHelp {
+	return &markers.DefinitionHelp{
+		Category: "CRD validation",
+		DetailedHelp: markers.DetailedHelp{
+			Summary: "drops the x-kubernetes-list-map-keys property ",
+			Details: "Typically this should be paired with PreserveUnknownFields && DropProperties",
+		},
+		FieldHelp: map[string]markers.DetailedHelp{},
+	}
+}
+
 func (DropProperties) Help() *markers.DefinitionHelp {
 	return &markers.DefinitionHelp{
 		Category: "CRD validation",
