@@ -43,6 +43,7 @@ func (d DropProperties) ApplyToSchema(schema *apiext.JSONSchemaProps) error {
 	schema.Items = nil
 	schema.AdditionalProperties = nil
 	schema.AdditionalItems = nil
+	schema.XListMapKeys = nil
 	return nil
 }
 
