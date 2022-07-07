@@ -30,7 +30,6 @@ var SchemaOperationMarkers = []*definitionWithHelp{
 		WithHelp(DropProperties{}.Help()),
 	must(markers.MakeDefinition(DropPropertiesName, markers.DescribesField, DropProperties{})).
 		WithHelp(DropProperties{}.Help()),
-
 	must(markers.MakeDefinition(DropListMapMarkerName, markers.DescribesType, DropListMapMarker{})).
 		WithHelp(DropListMapMarker{}.Help()),
 	must(markers.MakeDefinition(DropListMapMarkerName, markers.DescribesField, DropListMapMarker{})).
