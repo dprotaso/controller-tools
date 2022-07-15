@@ -65,6 +65,10 @@ func (d DropListMapMarker) ApplyToSchema(schema *apiext.JSONSchemaProps) error {
 	return nil
 }
 
+func (d DropListMapMarker) ApplyPriority() ApplyPriority {
+	return ApplyPriorityFirst
+}
+
 func init() {
 	AllDefinitions = append(AllDefinitions, SchemaOperationMarkers...)
 }
