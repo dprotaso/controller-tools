@@ -53,7 +53,7 @@ var _ = Describe("General Schema Flattening", func() {
 				},
 			},
 			LookupReference: func(ref string, contextPkg *loader.Package) (crd.TypeIdent, error) {
-				typ, pkgName, err := crd.RefParts(ref)
+				_, typ, pkgName, err := crd.RefParts(ref)
 				if err != nil {
 					return crd.TypeIdent{}, err
 				}
@@ -77,8 +77,8 @@ var _ = Describe("General Schema Flattening", func() {
 	Context("when dealing with reference chains", func() {
 		It("should flatten them", func() {
 			By("setting up a RootType, LeafAlias --> Alias --> Int")
-			toLeafAlias := crd.TypeRefLink("", leafAliasType.Name)
-			toLeaf := crd.TypeRefLink("other", leafType.Name)
+			toLeafAlias := crd.TypeRefLink("", "", leafAliasType.Name)
+			toLeaf := crd.TypeRefLink("", "other", leafType.Name)
 			fl.Parser.Schemata = map[crd.TypeIdent]apiext.JSONSchemaProps{
 				rootType: {
 					Properties: map[string]apiext.JSONSchemaProps{
@@ -111,8 +111,8 @@ var _ = Describe("General Schema Flattening", func() {
 
 		It("should not infinite-loop on circular references", func() {
 			By("setting up a RootType, LeafAlias --> Alias --> LeafAlias")
-			toLeafAlias := crd.TypeRefLink("", leafAliasType.Name)
-			toLeaf := crd.TypeRefLink("", inPkgLeafType.Name)
+			toLeafAlias := crd.TypeRefLink("", "", leafAliasType.Name)
+			toLeaf := crd.TypeRefLink("", "", inPkgLeafType.Name)
 			fl.Parser.Schemata = map[crd.TypeIdent]apiext.JSONSchemaProps{
 				rootType: {
 					Properties: map[string]apiext.JSONSchemaProps{
@@ -146,8 +146,8 @@ var _ = Describe("General Schema Flattening", func() {
 
 	It("should flatten a hierarchy of references", func() {
 		By("setting up a series of types RootType --> SubtypeWithRef --> LeafType")
-		toSubtype := crd.TypeRefLink("", subtypeWithRefs.Name)
-		toLeaf := crd.TypeRefLink("other", leafType.Name)
+		toSubtype := crd.TypeRefLink("", "", subtypeWithRefs.Name)
+		toLeaf := crd.TypeRefLink("", "other", leafType.Name)
 		fl.Parser.Schemata = map[crd.TypeIdent]apiext.JSONSchemaProps{
 			rootType: {
 				Properties: map[string]apiext.JSONSchemaProps{
@@ -198,7 +198,7 @@ var _ = Describe("General Schema Flattening", func() {
 		By("setting up a series of types RootType --> LeafType with 3 uses")
 		defOne := int64(1)
 		defThree := int64(3)
-		toLeaf := crd.TypeRefLink("other", leafType.Name)
+		toLeaf := crd.TypeRefLink("", "other", leafType.Name)
 		fl.Parser.Schemata = map[crd.TypeIdent]apiext.JSONSchemaProps{
 			rootType: {
 				Properties: map[string]apiext.JSONSchemaProps{
@@ -260,7 +260,7 @@ var _ = Describe("General Schema Flattening", func() {
 
 	It("should copy over documentation for each use of a type", func() {
 		By("setting up a series of types RootType --> LeafType with 3 doc-only uses")
-		toLeaf := crd.TypeRefLink("other", leafType.Name)
+		toLeaf := crd.TypeRefLink("", "other", leafType.Name)
 		fl.Parser.Schemata = map[crd.TypeIdent]apiext.JSONSchemaProps{
 			rootType: {
 				Properties: map[string]apiext.JSONSchemaProps{
@@ -322,8 +322,8 @@ var _ = Describe("General Schema Flattening", func() {
 
 	It("should ignore schemata that aren't references, but continue flattening", func() {
 		By("setting up a series of types RootType --> LeafType with non-ref properties")
-		toLeaf := crd.TypeRefLink("other", leafType.Name)
-		toSubtype := crd.TypeRefLink("", subtypeWithRefs.Name)
+		toLeaf := crd.TypeRefLink("", "other", leafType.Name)
+		toSubtype := crd.TypeRefLink("", "", subtypeWithRefs.Name)
 		fl.Parser.Schemata = map[crd.TypeIdent]apiext.JSONSchemaProps{
 			rootType: {
 				Properties: map[string]apiext.JSONSchemaProps{

@@ -26,6 +26,7 @@ import (
 	pkgstest "golang.org/x/tools/go/packages/packagestest"
 	apiext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	crdmarkers "sigs.k8s.io/controller-tools/pkg/crd/markers"
+	"sigs.k8s.io/controller-tools/pkg/loader"
 	testloader "sigs.k8s.io/controller-tools/pkg/loader/testutils"
 	"sigs.k8s.io/controller-tools/pkg/markers"
 )
@@ -64,7 +65,9 @@ func transform(t *testing.T, expr string) *apiext.JSONSchemaProps {
 	pkg.NeedTypesInfo()
 	failIfErrors(t, pkg.Errors)
 
-	schemaContext := newSchemaContext(pkg, nil, true, false).ForInfo(&markers.TypeInfo{})
+	schemaContext := newSchemaContext(pkg, nil, true, false, nil, "").ForType(&markers.TypeInfo{
+		Package: &loader.Package{Package: &packages.Package{}},
+	})
 	// yick: grab the only type definition
 	definedType := pkg.Syntax[0].Decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type
 	result := typeToSchema(schemaContext, definedType)
