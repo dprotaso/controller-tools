@@ -85,9 +85,9 @@ var _ = Describe("Parsing", func() {
 		It("should work with fiddled field names", parseTestCase{reg: &reg, raw: "+testing:custom={hi}", output: CustomType{Value: []string{"hi"}}}.Run)
 
 		It("should parse name-only markers", parseTestCase{reg: &reg, raw: "+testing:empty", output: struct{}{}}.Run)
-
 		Context("when parsing anonymous markers", func() {
 			It("should parse into literal-typed values", parseTestCase{reg: &reg, raw: "+testing:anonymous:literal=foo", output: "foo"}.Run)
+			It("should parse into literal-typed values", parseTestCase{reg: &reg, raw: "+testing:anonymous:literal=", output: ""}.Run)
 			It("should parse into named-typed values", parseTestCase{reg: &reg, raw: "+testing:anonymous:named=foo", output: wrappedMarkerVal("foo")}.Run)
 			It("shouldn't require any argument to an optional-valued marker", parseTestCase{reg: &reg, raw: "+testing:anonymousOptional", output: (*int)(nil)}.Run)
 		})

@@ -2,7 +2,7 @@ module sigs.k8s.io/controller-tools
 
 go 1.21
 
-toolchain go1.22.0
+toolchain go1.22.10
 
 require (
 	github.com/fatih/color v1.16.0

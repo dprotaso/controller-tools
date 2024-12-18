@@ -910,7 +910,7 @@ func (d *Definition) Parse(rawMarker string) (interface{}, error) {
 
 	if d.Strict {
 		for argName, arg := range d.Fields {
-			if _, wasSeen := seen[argName]; !wasSeen && !arg.Optional {
+			if _, wasSeen := seen[argName]; !wasSeen && !arg.Optional && argName != "" {
 				scanner.Error(scanner, fmt.Sprintf("missing argument %q", argName))
 			}
 		}
